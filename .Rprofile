@@ -1,3 +1,6 @@
+library(tidyverse)
+
+
 setwd("C:/Users/andre/OneDrive - Università degli Studi di Torino/R/Kidneys")
 data <- utils :: read.csv("kidney.csv")
 
@@ -9,5 +12,3 @@ X <- data[ , -7]
 # This affects analysis that aren't invariant to scale transformations (e.g. PCA)
 Z <- scale(X)
 summary(Z)
-
-library(tidyverse)
