@@ -9,4 +9,4 @@ The main tools and concepts used in the project:
 - 2 samples testing via parametric and non parametric methods
 - Logistic regression
 - Random forests
-- Evaluation of classification algorithms
+- Evaluation of classification models
