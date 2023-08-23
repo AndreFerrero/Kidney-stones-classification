@@ -10,3 +10,6 @@ The main tools and concepts used in the project:
 - Logistic regression
 - Random forests
 - Evaluation of classification models
+
+NOTE: If the Rmarkdown is to be reproduced, directory should be changed and the dataset downloaded from the Kaggle page.
+https://www.kaggle.com/datasets/vuppalaadithyasairam/kidney-stone-prediction-based-on-urine-analysis
