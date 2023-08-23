@@ -21,7 +21,7 @@ library(knitr)
 ```
 
 ```{r WD, echo = FALSE}
-setwd("C:/Users/andre/OneDrive - Università degli Studi di Torino/R/Kidneys")
+setwd("C:/Users/andre/OneDrive - Università degli Studi di Torino/R/Kidneys/Kidney-stones-classification")
 ```
 
 ```{r Import data}
