@@ -1,11 +1,10 @@
 ---
 title: "Kidney stones classification project"
 output:
-  pdf_document:
-    toc: yes
   html_document:
     toc: yes
     toc_float: yes
+    code_folding: hide
 ---
 
 ```{r packages, message = FALSE}
@@ -21,7 +20,7 @@ library(knitr)
 ```
 
 ```{r WD, echo = FALSE}
-setwd("C:/Users/andre/OneDrive - Università degli Studi di Torino/R/Kidneys/Kidney-stones-classification")
+setwd("C:/Users/andre/OneDrive - Alma Mater Studiorum Università di Bologna/R/Kidneys/Kidney-stones-classification")
 ```
 
 ```{r Import data}
