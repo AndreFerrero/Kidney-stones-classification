@@ -1,0 +1,487 @@
+---
+title: "Kidney stones classification project"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+---
+
+```{r packages, message = FALSE}
+library(tidyverse)
+library(statmod)
+library(performanceEstimation)
+library(factoextra)
+library(caret)
+library(pROC)
+library(gdata)
+library(randomForest)
+library(knitr)
+```
+
+```{r WD, echo = FALSE}
+setwd("C:/Users/andre/OneDrive - Università degli Studi di Torino/R/Kidneys")
+```
+
+```{r Import data}
+data <- utils :: read.csv("kidney.csv")
+
+data$target <- recode(data$target, "1" = "Yes", "0" = "No") %>%
+  factor()
+```
+
+# Introduction
+The goal of the project is trying to build a model that can predict if someone has kidney stones based on urine characteristics The dataset was taken from Kaggle, and it counts 79 observations. Given the few data points available, some caution is needed when the model will be built.
+
+The link to the dataset is the following: https://www.kaggle.com/datasets/vuppalaadithyasairam/kidney-stone-prediction-based-on-urine-analysis
+
+The description of the variables taken from the Kaggle dataset page is as follows:
+
+1. Specific gravity, the density of the urine relative to water
+2. pH, the negative logarithm of the hydrogen ion
+3. Osmolarity (mOsm), a unit used in biology and medicine, proportional to the concentration of molecules in solution
+4. Conductivity (mMho). One Mho is one reciprocal Ohm. Conductivity is proportional to the concentration of charged ions in solution
+5. Urea concentration in millimoles per litre
+6. Calcium, concentration in millimoles per litre.
+
+# Exploratory analysis
+
+Let’s extract the predictors (they’re all quantitative) and standardize them since we don’t know much about the biological problem and want everything on the same scale for visualisation. This affects analysis that aren’t invariant to scale transformations (e.g. PCA).
+
+```{r Scale}
+X <- data[ , -7]
+
+Z <- scale(X)
+summary(Z)
+```
+
+Let’s plot the histograms and the boxplots of the predictors.
+
+```{r Histograms and boxplots}
+par(mfrow = c(2, 3))
+
+for(i in colnames(Z)){
+  hist(Z[ , i], main = paste("Histogram of", i), xlab = NULL)
+}
+
+for(i in colnames(Z)){
+  boxplot(Z[ , i], main = paste("Boxplot of", i), xlab = NULL)
+}
+```
+
+This is the plot of the target variable. It looks balanced. This will help the model because well balanced classes avoid problems such as not being able to identify the least frequent classes.
+
+```{r Barplot of the target}
+barplot(table(data[ , 7]), main = "Barplot of target variable: Kidney stones?")
+```
+
+Now let’s investigate possible correlation between the predictors. From the plot below we can see there is some between certain variables. This needs to be taken in consideration, as it is important for regression and it is a prerequisite for methods like PCA.
+
+```{r Correlation, message=FALSE, warning=FALSE}
+library(GGally)
+
+ggscatmat(Z)
+```
+
+## Principal Components Analysis (PCA)
+It might be worth to try PCA to see if we can visualize the data and inspect some relationships between the variables, since they’re all quantitative (PCA can only be applied to quantitative variables). The goal is reducing dimension without losing too much information.
+
+From the summary and the screeplot 2 principal components might be enough. Together they explain more than 75% of the variation in the data.
+
+```{r PCA}
+pca <- prcomp(Z)
+
+summary(pca)
+```
+
+```{r Screeplot}
+fviz_eig(pca)
+```
+
+Given that we have 2 principal components, we are in the perfect condition to visualize the data on a 2D plane. We’ll go for a biplot, that allows us to see simultaneously the variables and the data points, understand relationships between the 2 and, if we colour by the target, understand possible relationships between the target and the variables.
+
+```{r Biplot}
+fviz_pca_biplot(pca, repel = TRUE,
+                col.var = "green", # Variables color
+                col.ind = data$target  # Individuals color
+)
+```
+
+It looks like the 1st PC represents physical characteristics of urine, while the 2nd is related only to pH. This can be deduced by the relatively small angle between the arrows (the variables) and the axis, the principal components. All the variables are negatively correlated to the principal components, so lower values of the PC are related to higher values of the variables and viceversa. From an initial perspective, we might deduce that people who are affected by kidney stones have higher values of urea, osmolarity, gravity, conductivity and calcium.
+
+## 2 sample t-test
+
+From the boxplots below it seems that, for most of the predictors, the values are indeed higher in the target group Yes than the other.
+
+```{r boxplots by predictors}
+par(mfrow = c(2, 3))
+
+data_Z <- data.frame(Z, target = data$target)
+
+for(i in colnames(Z)){
+  boxplot(data_Z[ , i] ~ data_Z$target, main = paste("Boxplot of", i, "by target"), xlab = NULL, ylab = NULL)
+}
+```
+
+2 sample Welch t-test helps verify statistically if the means are the same in the 2 groups (This is the null hypothesis H0, without the additional assumption that the variance is the same across groups). In the table below, we report p-values of the test for all the variables. The test doesn’t reject H0 for the 2nd and the 4th variable, pH and Conductivity. This suggests that Conductivity and pH probably don't have a big effect on the target, given the sample.
+
+```{r ttest, results = "asis"}
+pv_ttest <- NULL
+
+for (i in 1:6){
+  # loops through all the variables, conducts 2 sample t-test and extracts p-value for every variable 
+  t <- t.test(data_Z[ , i] ~ target, data = data_Z)
+  pv <- t$p.value
+  pv_ttest <- append(pv_ttest, pv)
+}
+
+ttest_df <- data.frame(Variable = colnames(Z), P.value = round(pv_ttest, 5))
+kable(ttest_df)
+```
+
+An assumption for the 2 sample t test is that the population from which the data originated follows a normal distribution. If this assumption fails, thanks to the central limit theorem we can still get reliable results if the sample is large enough. For 2 groups, 15 elements each are usually sufficient.
+
+Luckily, this is the case and we might not worry about normality (which is clearly absent for calcium, if we look back at the visualizations).
+If the sample size wasn't large enough, one might need to resort to a non parametric test, in this case the Mann-Whitney U test. It does require the assumption that variance is equal across groups, though, while the Welch t-test didn't (it is clear again that calcium has really different variance in the 2 groups).
+
+Outliers might also cause problems to the t test. In this case they appear to be a natural expression of the phenomenon, so they shouldn't be removed. Moreover, the outliers for calcium are in the right tail of the distribution of the healthy group, therefore if they had an effect, this should cause the test not to reject, instead of rejecting as it does. For pH, by a visual look the medians are pretty much the same so one could simply say that the groups are the same.
+
+For completeness, below there are the results of the Mann-Whitney U test, even though one should pay attention to the fact that equal variance is not present for calcium.
+Nonetheless, the results confirm the ones obtain from t-test.
+
+```{r Mann-Whitney U test, warning=FALSE, results= "asis"}
+pv_utest <- NULL
+
+for (i in 1:6){
+  # loops through all the variables, conducts 2 sample t-test and extracts p-value for every variable 
+  u <- wilcox.test(data_Z[ , i] ~ target, data = data_Z)
+  pv <- u$p.value
+  pv_utest <- append(pv_utest, pv)
+}
+
+utest_df <- data.frame(Variable = colnames(Z), P.value = round(pv_utest, 5))
+kable(utest_df)
+```
+
+
+# Classification
+Now we want to train some statistical models to be able to classify individuals based on urine characteristics.
+
+Remember that the dataset has only 79 observations. When dealing with few observations, one has to be careful and prevent the model from overfitting. The consequences might be that the model will perform well on the train data, but poorly on the test data. This can be done by preferring simpler models over more complex ones and by reducing the number of parameters used.
+
+The first thing we’ll need to do is split the dataset into train and test. The train will be the one the models will train on, while the test will be the one they will be evaluated on based on their predictions. We'll use standardised variables.
+
+```{r Train Test}
+set.seed(1)
+
+# create id column to use it as a key for antijoin
+data$id <- 1:nrow(data)
+
+# split data into TRAIN and TEST set
+train <- data %>% sample_frac(0.7)
+
+test <- anti_join(data, train, by = "id")
+
+# remove the id column since it's not relevant anymore
+train <- train[ , -8]
+test <- test[ , -8]
+
+# standardise the predictors
+train <- data.frame(scale(train[ , -7]), target = train$target)
+test <- data.frame(scale(test[ , -7]), target =  test$target)
+```
+
+This function gets repeated k-fold cross validation given the model formula and the model method. This technique is useful in tuning hyperparameters or for variable selection without using the test data, which should be used only at the end as a final evaluation once the model is ready. Otherwise, the model might be tweaked given the information in the test set, which is something undesirable.
+
+The method will randomly partition the train dataset into k subgroups and train the model on k-1 of them. The latter will be used to evaluate the performance. (This is done 10 times, in this case. That’s the reason it's called “repeated”).
+
+```{r Repeated CV}
+get_repeated_cv <- function(formula, method){
+  
+  # formula is a basic formula like in y ~ x
+  # method is a character stating the model to be trained. For more information, see ?train
+  
+  
+  # since the partition is random, to get reproducible results we will set a random state
+  set.seed(1)
+  
+  control <- trainControl(method = "repeatedcv", number = 5, repeats = 10)
+  
+  if (method != "glm"){
+    
+    # this is needed because for logistic regression, which belongs to the method "glm",
+    # family = binomial needs to be specified in the function
+    
+    kfold_model <- train(formula,
+                     data = train, trControl = control,
+                     method = method)
+    print(kfold_model)
+  }
+  
+  else{
+    
+    kfold_model <- train(formula,
+                     data = train, trControl = control,
+                     method = method, family = "binomial")
+    print(kfold_model)
+  }
+}
+```
+
+Now we want a function that returns various metrics given a model on the test data.
+
+```{r Metrics}
+get_metrics <- function(mod, mod_name){
+  # mod_name is a character stating the name of the model
+  # mod is the actual model object
+  
+  target <- test$target
+  
+  # threshold
+  t <- 0.5
+  
+  yhat <- predict(mod, 
+                 newdata = test[ , 1:6],
+                 type = "response")
+  
+  # label the predictions if needed
+  
+  if (is.factor(yhat) == FALSE){
+    yhat <- ifelse( yhat > t, "Yes", "No")
+  }
+  
+  yhat <- ordered(yhat)
+  
+  # This function returns a named vector with many metrics. It can be used to
+  # extract those we're interested about
+  metrics <- classificationMetrics(trues = target, preds = yhat)
+  
+  acc <- metrics["acc"]
+  prec <- metrics["prec"]
+  sens <- metrics["sens"]
+  fscore <- metrics["F"]
+  spec <- metrics["spec"]
+  
+  if (mod_name == "random forest") {
+    print(sprintf("Metrics for %s:", mod_name))
+  }
+  else {
+    print(sprintf("Metrics for %s with threshold %.1f:", mod_name, t))
+  }
+  
+  print(sprintf("Accuracy: %.2f",acc))
+  print(sprintf("Precision: %.2f", prec))
+  print(sprintf("Sensitivity: %.2f", sens))
+  print(sprintf("F-score: %.2f", fscore))
+  print(sprintf("Specificity: %.2f", spec))
+}
+```
+
+With the same fashion, this function returns the metrics of 2 given models and compares them in a table.
+
+```{r Compare}
+compare_models <- function(mod1, mod2, mod_name1, mod_name2){
+  
+  target <- test$target
+  
+  # threshold
+  t <- 0.5
+  
+  yhat1 <- predict(mod1, 
+                 newdata = test[ , 1:6],
+                 type = "response")
+  
+  yhat2 <- predict(mod2, 
+                 newdata = test[ , 1:6],
+                 type = "response")
+  
+  # label the predictions if needed
+  
+  if (is.factor(yhat1) == FALSE){
+    yhat1 <- ifelse(yhat1 > t, "Yes", "No")
+  }
+  
+  if (is.factor(yhat2) == FALSE){
+        yhat2 <- ifelse(yhat2 > t, "Yes", "No")
+  }
+  
+  yhat1 <- ordered(yhat1)
+  yhat2 <- ordered(yhat2)
+  
+  metrics1 <- classificationMetrics(trues = target, preds = yhat1)
+  
+  acc1 <- metrics1["acc"]
+  prec1 <- metrics1["prec"]
+  sens1 <- metrics1["sens"]
+  fscore1 <- metrics1["F"]
+  spec1 <- metrics1["spec"]
+  
+  metrics2 <- classificationMetrics(trues = target, preds = yhat2)
+  
+  acc2 <- metrics2["acc"]
+  prec2 <- metrics2["prec"]
+  sens2 <- metrics2["sens"]
+  fscore2 <- metrics2["F"]
+  spec2 <- metrics2["spec"]
+  
+  acc <- round(c(acc1, acc2), 2)
+  prec <- round(c(prec1, prec2), 2)
+  sens <- round(c(sens1, sens2), 2)
+  fscore <- round(c(fscore1, fscore2), 2)
+  spec <- round(c(spec1, spec2), 2)
+  
+  metrics <- data.frame(Accuracy = acc,
+                        Precision = prec,
+                        Sensitivity = sens,
+                        Fscore = fscore,
+                        Specificity = spec)
+  
+  row.names(metrics) <- c(mod_name1, mod_name2)
+  
+  kable(metrics)
+}
+```
+
+## Logistic regression
+
+The first model we want to train is logistic regression, and it will be the baseline since it’s a very simple model. It's a regression model that predicts probabilities of belonging to the target group. This implies that one needs to specify a probability threshold after which the unit is labeled as "Yes". Usually, a threshold of 0.5 is chosen.
+
+Initially, the model includes all the variables in the dataset.
+Probably this version will suffer from multicollinearity because the variables are correlated with each other. This will cause variables to be “not significant” and with higher imprecision of the estimated coefficients (higher variance). This is indeed what we can see from the output below (many are not significant).
+
+```{r logit}
+logit <- glm(target ~ ., data = train, family = binomial())
+summary(logit)
+```
+
+With the function below, we can see the accuracy of the model by using repeated k-fold cross validation.
+
+```{r Metrics full model}
+get_repeated_cv(target ~ ., "glm")
+```
+
+From the 2 sample t test we know that Conductivity and pH are not significant. What happens if we remove them?
+
+From the metrics below, we can see the performance improved if we remove the variables.
+
+```{r metrics ttest model}
+get_repeated_cv(target ~ osmo + gravity + urea + calc, method = "glm")
+```
+
+Sometimes, removing highly correlated variables that don’t add more information can improve model performance by reducing overfitting. For example, urea levels information is already contained in gravity and osmolarity, given that the higher the urea, the higher the levels of the other 2 variables. In this case, removing urea results in higher accuracy of the model.
+
+```{r metrics urea}
+get_repeated_cv(target ~ osmo + gravity + calc, method = "glm")
+```
+
+The plot shows quantile residuals over predictions of the model on the train dataset. Quantile residuals are the standard to check residuals of Generalised Linear Models because they usually present more robust results.
+
+Suggestion is to plot 4 plots of quantile residuals, since the procedure for obtaining them involves a certain degree of randomness. Everything that stops appearing between the plots is due to the random process (potential outliers are not a threat if they appear only once).
+
+Model specification of the last model seems good: no outliers or influential points.
+
+```{r quantile residuals}
+final_logit <- glm(target ~ osmo + gravity + calc, data = train, family = binomial())
+
+
+pred <- predict(final_logit, type = "response")
+
+for (i in 1:4){
+  res <- qresid(final_logit)
+  qres_df <- data.frame(pred, res)
+  
+  plot <- ggplot(qres_df, aes(x = pred, y = res)) +
+    geom_point() + theme_bw() + ylab("Quantile residuals") +
+    xlab("Predictions") + geom_hline(yintercept = 0, col = "blue")
+  
+  # this function changes the variable name so that it's saved in a different variable for every loop
+  mv(from = "plot", to = paste0("plot_", i))
+}
+
+gridExtra::grid.arrange(plot_1, plot_2, plot_3, plot_4)
+```
+
+These are the metrics for the model on the test data, for a threshold of 0.5. Sensitivity, which is the True Positive Rate (how well the model correctly labeled as Yes, among all the people that had kidney stones) is high. Also precision is quite high (that is the number of True Positives over all the Positive predictions of the model). These are signs of a model that generalised well from the test data. These metrics are to be compared later and see if we can improve them, otherwise logistic regression is our choice.
+
+```{r metrics final logit}
+get_metrics(final_logit, "logistic regression")
+```
+
+
+## Random forests
+
+Now we want to train a random forest, since it's a simple algorithm and it usually performs well in classification problems.
+
+In the summary below we can see the Out Of Bag (OOB) error rate, which is a useful metric in determining how well the model performs (It's the error rate on the data points that are not used in the training. These originate because for every decision tree in the forest, a new dataset is used to ensure variability, and the dataset is created by sampling with replacement from the original data. This implies that some of the data points might not make it in the dataset).
+
+```{r Full model}
+set.seed(1)
+
+rf <- randomForest(target ~ ., data = train, proximity = TRUE)
+rf
+```
+
+Let's get accuracy with repeated k-fold cross validation. The metrics are returned for different number of variables (mtry). This is because every decision tree is trained with a randomly chosen subset of the variables (this is to ensure variability and prevent correlation between the results obtained from the decision trees).
+
+```{r metrics full}
+get_repeated_cv(target ~ ., "rf")
+```
+
+If we remove the variables as the t test suggested, the model performs better again.
+
+```{r metrics test}
+get_repeated_cv(target ~ osmo + gravity + urea + calc, "rf")
+```
+
+And that's also true for urea.
+
+```{r metrics urea model}
+get_repeated_cv(target ~ osmo + gravity + calc, "rf")
+```
+
+Now let's train the model without urea and the other 2 variables. With mtry = 1 we obtain better results for the OOB error rate, so we'll go for that.
+
+```{r final random forest}
+set.seed(1)
+
+final_rf <- randomForest(target ~ osmo + gravity + calc,
+                        data = train, proximity = TRUE, mtry = 1)
+
+final_rf
+```
+
+With the plot below we see how the OOB error rate changes as the number of decision trees grows. We can see that 500 is a reasonably good number, since OOB error rates stabilised after 200.
+
+```{r OOB error rate}
+plot(final_rf, main = "OOB error rate")
+```
+
+With this function we get the metrics on the test data.
+
+```{r Metrics final random forest}
+get_metrics(final_rf, "random forest")
+```
+
+# Conclusion
+From the results obtained, we conclude that logistic regression performs better than random forests in the case of predicting if a patient has kidney stones. Furthermore, the main variables that helped the classification process are calcium, gravity and osmolarity.
+
+Other models can be trained (e.g. Support Vector Machines) but one has to be careful about overfitting.
+
+In the table below we summarise the metrics for the 2 models, where we can see that logistic regression outperforms random forest in every metric.
+
+```{r Final comparison}
+compare_models(final_logit, final_rf, "Logistic regression", "Random forest")
+```
+
+In particular, logistic regression is more accurate when it predicts someone as positive (higher precision). Moreover, it is more capable of retrieving positives and negatives in the dataset (higher sensitivity and higher specificity).
+
+
+
+
+
+
+
+
+
+
+
